@@ -1,574 +1,384 @@
 import { create } from 'zustand'
-import { supabase } from '@/shared/lib/supabase'
+import { devtools } from 'zustand/middleware'
 import { captureException } from '@/config/sentry.config'
-import { rollDice } from '../lib/dice-utils'
+import { SessionAPI } from './session/session-api'
+import { RealtimeManager } from './session/realtime-manager'
+import { initialSessionState, type SessionState } from './session/session-state'
+import { type SessionActions } from './session/session-actions'
 import type { 
-  SessionState, 
-  SessionActions, 
-  GameSession,
   CreateSessionData,
   SendMessageData,
   DiceRollData,
   InitiativeEntry,
-  ChatMessage,
-  DiceRoll
+  AssetUploadData
 } from '../types'
 
 interface SessionsStore extends SessionState, SessionActions {}
 
-export const useSessionsStore = create<SessionsStore>((set, get) => ({
-  currentSession: null,
-  sessions: [],
-  loading: false,
-  connecting: false,
-  connected: false,
-  participants: [],
-  chatMessages: [],
-  diceRolls: [],
-  initiativeOrder: [],
-
-  createSession: async (data: CreateSessionData) => {
-    set({ loading: true })
-    
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('User not authenticated')
-
-      const sessionData = {
-        campaign_id: data.campaignId,
-        name: data.name,
-        description: data.description,
-        status: 'scheduled' as const,
-        scheduled_at: data.scheduledAt,
-        current_scene: '',
-        notes: '',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
-
-      const { data: newSession, error } = await supabase
-        .from('game_sessions')
-        .insert(sessionData)
-        .select()
-        .single()
-
-      if (error) throw error
-
-      // Add creator as GM participant
-      await supabase
-        .from('session_participants')
-        .insert({
-          session_id: newSession.id,
-          user_id: user.id,
-          role: 'gm',
-          status: 'offline',
-          joined_at: new Date().toISOString(),
-        })
-
-      const session = transformSessionFromDB(newSession)
-      
-      set(state => ({ 
-        sessions: [session, ...state.sessions],
-        loading: false 
-      }))
-
-      return session
-    } catch (error) {
-      set({ loading: false })
-      captureException(error as Error, { context: 'create_session' })
-      throw error
-    }
-  },
-
-  joinSession: async (sessionId: string, characterId?: string) => {
-    set({ connecting: true })
-    
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('User not authenticated')
-
-      // Check if already a participant
-      const { data: existingParticipant } = await supabase
-        .from('session_participants')
-        .select('id')
-        .eq('session_id', sessionId)
-        .eq('user_id', user.id)
-        .single()
-
-      if (!existingParticipant) {
-        // Add as new participant
-        await supabase
-          .from('session_participants')
-          .insert({
-            session_id: sessionId,
-            user_id: user.id,
-            character_id: characterId,
-            role: 'player',
-            status: 'online',
-            joined_at: new Date().toISOString(),
-          })
-      } else {
-        // Update status to online
-        await supabase
-          .from('session_participants')
-          .update({ 
-            status: 'online',
-            character_id: characterId 
-          })
-          .eq('id', existingParticipant.id)
-      }
-
-      await get().connectToSession(sessionId)
-      set({ connecting: false })
-    } catch (error) {
-      set({ connecting: false })
-      captureException(error as Error, { context: 'join_session', sessionId })
-      throw error
-    }
-  },
-
-  leaveSession: async (sessionId: string) => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('User not authenticated')
-
-      await supabase
-        .from('session_participants')
-        .update({ status: 'offline' })
-        .eq('session_id', sessionId)
-        .eq('user_id', user.id)
-
-      get().disconnectFromSession()
-    } catch (error) {
-      captureException(error as Error, { context: 'leave_session', sessionId })
-      throw error
-    }
-  },
-
-  startSession: async (sessionId: string) => {
-    try {
-      await supabase
-        .from('game_sessions')
-        .update({ 
-          status: 'active',
-          started_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', sessionId)
-
-      // Send system message
-      await get().sendChatMessage(sessionId, {
-        type: 'system',
-        content: 'Game session has started!'
-      })
-    } catch (error) {
-      captureException(error as Error, { context: 'start_session', sessionId })
-      throw error
-    }
-  },
-
-  endSession: async (sessionId: string) => {
-    try {
-      await supabase
-        .from('game_sessions')
-        .update({ 
-          status: 'completed',
-          ended_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', sessionId)
-
-      // Send system message
-      await get().sendChatMessage(sessionId, {
-        type: 'system',
-        content: 'Game session has ended. Thanks for playing!'
-      })
-    } catch (error) {
-      captureException(error as Error, { context: 'end_session', sessionId })
-      throw error
-    }
-  },
-
-  updateSession: async (sessionId: string, updates: Partial<GameSession>) => {
-    try {
-      const updateData = {
-        name: updates.name,
-        description: updates.description,
-        current_scene: updates.currentScene,
-        notes: updates.notes,
-        updated_at: new Date().toISOString(),
-      }
-
-      await supabase
-        .from('game_sessions')
-        .update(updateData)
-        .eq('id', sessionId)
-
-      set(state => ({
-        currentSession: state.currentSession?.id === sessionId 
-          ? { ...state.currentSession, ...updates, updatedAt: updateData.updated_at }
-          : state.currentSession,
-        sessions: state.sessions.map(session => 
-          session.id === sessionId 
-            ? { ...session, ...updates, updatedAt: updateData.updated_at }
-            : session
-        )
-      }))
-    } catch (error) {
-      captureException(error as Error, { context: 'update_session', sessionId })
-      throw error
-    }
-  },
-
-  sendChatMessage: async (sessionId: string, message: SendMessageData) => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('User not authenticated')
-
-      const messageData = {
-        session_id: sessionId,
-        user_id: user.id,
-        type: message.type,
-        content: message.content,
-        metadata: message.metadata,
-        timestamp: new Date().toISOString(),
-      }
-
-      const { data: newMessage, error } = await supabase
-        .from('chat_messages')
-        .insert(messageData)
-        .select(`
-          *,
-          user:user_profiles(id, first_name, last_name, avatar_url)
-        `)
-        .single()
-
-      if (error) throw error
-
-      const chatMessage = transformChatMessageFromDB(newMessage)
-      
-      set(state => ({
-        chatMessages: [...state.chatMessages, chatMessage]
-      }))
-    } catch (error) {
-      captureException(error as Error, { context: 'send_chat_message', sessionId })
-      throw error
-    }
-  },
-
-  rollDice: async (sessionId: string, rollData: DiceRollData) => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('User not authenticated')
-
-      const result = rollDice(rollData)
-      
-      const diceRollData = {
-        session_id: sessionId,
-        user_id: user.id,
-        expression: rollData.expression,
-        result: result.total,
-        breakdown: result.breakdown,
-        modifier: result.modifier,
-        advantage: rollData.advantage,
-        purpose: rollData.purpose,
-        timestamp: new Date().toISOString(),
-      }
-
-      const { data: newRoll, error } = await supabase
-        .from('dice_rolls')
-        .insert(diceRollData)
-        .select(`
-          *,
-          user:user_profiles(id, first_name, last_name, avatar_url)
-        `)
-        .single()
-
-      if (error) throw error
-
-      const diceRoll = transformDiceRollFromDB(newRoll)
-      
-      set(state => ({
-        diceRolls: [...state.diceRolls, diceRoll]
-      }))
-
-      // Also send as chat message
-      await get().sendChatMessage(sessionId, {
-        type: 'dice',
-        content: `🎲 ${rollData.expression}: **${result.total}**`,
-        metadata: { diceRoll: diceRoll }
-      })
-    } catch (error) {
-      captureException(error as Error, { context: 'roll_dice', sessionId })
-      throw error
-    }
-  },
-
-  updateInitiative: async (sessionId: string, entries: InitiativeEntry[]) => {
-    try {
-      // Delete existing initiative entries
-      await supabase
-        .from('initiative_entries')
-        .delete()
-        .eq('session_id', sessionId)
-
-      // Insert new entries
-      if (entries.length > 0) {
-        const initiativeData = entries.map(entry => ({
-          session_id: sessionId,
-          character_id: entry.characterId,
-          name: entry.name,
-          initiative: entry.initiative,
-          is_active: entry.isActive,
-          conditions: entry.conditions,
-          hit_points: entry.hitPoints,
-        }))
-
-        await supabase
-          .from('initiative_entries')
-          .insert(initiativeData)
-      }
-
-      set({ initiativeOrder: entries })
-    } catch (error) {
-      captureException(error as Error, { context: 'update_initiative', sessionId })
-      throw error
-    }
-  },
-
-  connectToSession: async (sessionId: string) => {
-    try {
-      set({ connecting: true })
-
-      // Fetch session data
-      const { data: sessionData, error: sessionError } = await supabase
-        .from('game_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .single()
-
-      if (sessionError) throw sessionError
-
-      // Fetch participants
-      const { data: participantsData, error: participantsError } = await supabase
-        .from('session_participants')
-        .select(`
-          *,
-          user:user_profiles(id, first_name, last_name, avatar_url),
-          character:characters(id, name, race, class, level)
-        `)
-        .eq('session_id', sessionId)
-
-      if (participantsError) throw participantsError
-
-      // Fetch recent chat messages
-      const { data: messagesData, error: messagesError } = await supabase
-        .from('chat_messages')
-        .select(`
-          *,
-          user:user_profiles(id, first_name, last_name, avatar_url)
-        `)
-        .eq('session_id', sessionId)
-        .order('timestamp', { ascending: true })
-        .limit(100)
-
-      if (messagesError) throw messagesError
-
-      // Fetch initiative order
-      const { data: initiativeData, error: initiativeError } = await supabase
-        .from('initiative_entries')
-        .select('*')
-        .eq('session_id', sessionId)
-        .order('initiative', { ascending: false })
-
-      if (initiativeError) throw initiativeError
-
-      const session = transformSessionFromDB(sessionData)
-      const participants = participantsData.map(transformParticipantFromDB)
-      const chatMessages = messagesData.map(transformChatMessageFromDB)
-      const initiativeOrder = initiativeData.map(transformInitiativeFromDB)
-
-      set({
-        currentSession: session,
-        participants,
-        chatMessages,
-        initiativeOrder,
-        connected: true,
-        connecting: false
-      })
-
-      // Set up real-time subscriptions
-      setupRealtimeSubscriptions(sessionId)
-    } catch (error) {
-      set({ connecting: false, connected: false })
-      captureException(error as Error, { context: 'connect_to_session', sessionId })
-      throw error
-    }
-  },
-
-  disconnectFromSession: () => {
-    // Clean up subscriptions
-    supabase.removeAllChannels()
-    
-    set({
-      currentSession: null,
-      participants: [],
-      chatMessages: [],
-      diceRolls: [],
-      initiativeOrder: [],
-      connected: false,
-      connecting: false
-    })
-  },
-
-  setCurrentSession: (session: GameSession | null) => {
-    set({ currentSession: session })
-  },
-}))
-
-// Helper functions for real-time subscriptions
-function setupRealtimeSubscriptions(sessionId: string) {
-  // Chat messages subscription
-  supabase
-    .channel(`chat_messages:${sessionId}`)
-    .on('postgres_changes', 
-      { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'chat_messages',
-        filter: `session_id=eq.${sessionId}`
-      }, 
-      (payload) => {
-        const message = transformChatMessageFromDB(payload.new)
-        useSessionsStore.setState(state => ({
-          chatMessages: [...state.chatMessages, message]
-        }))
-      }
-    )
-    .subscribe()
-
-  // Dice rolls subscription
-  supabase
-    .channel(`dice_rolls:${sessionId}`)
-    .on('postgres_changes', 
-      { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'dice_rolls',
-        filter: `session_id=eq.${sessionId}`
-      }, 
-      (payload) => {
-        const diceRoll = transformDiceRollFromDB(payload.new)
-        useSessionsStore.setState(state => ({
-          diceRolls: [...state.diceRolls, diceRoll]
-        }))
-      }
-    )
-    .subscribe()
-
-  // Initiative updates subscription
-  supabase
-    .channel(`initiative:${sessionId}`)
-    .on('postgres_changes', 
-      { 
-        event: '*', 
-        schema: 'public', 
-        table: 'initiative_entries',
-        filter: `session_id=eq.${sessionId}`
-      }, 
-      () => {
-        // Refetch initiative order
-        supabase
-          .from('initiative_entries')
-          .select('*')
-          .eq('session_id', sessionId)
-          .order('initiative', { ascending: false })
-          .then(({ data }) => {
-            if (data) {
-              const initiativeOrder = data.map(transformInitiativeFromDB)
-              useSessionsStore.setState({ initiativeOrder })
+export const useSessionsStore = create<SessionsStore>()(
+  devtools(
+    (set, get) => {
+      // Initialize realtime manager
+      const realtimeManager = new RealtimeManager({
+        onChatMessage: (message) => {
+          set((state) => ({
+            chatMessages: [...state.chatMessages, message]
+          }))
+        },
+        onDiceRoll: (roll) => {
+          set((state) => ({
+            diceRolls: [roll, ...state.diceRolls]
+          }))
+        },
+        onInitiativeUpdate: async () => {
+          const sessionId = get().currentSession?.id
+          if (sessionId) {
+            try {
+              const entries = await SessionAPI.loadInitiativeOrder(sessionId)
+              set({ initiativeOrder: entries })
+            } catch (error) {
+              captureException(error)
             }
+          }
+        },
+        onParticipantUpdate: async () => {
+          const sessionId = get().currentSession?.id
+          if (sessionId) {
+            try {
+              const participants = await SessionAPI.loadParticipants(sessionId)
+              set({ participants })
+            } catch (error) {
+              captureException(error)
+            }
+          }
+        },
+        onConnectionChange: (connected) => {
+          set({ connected, connecting: false })
+        }
+      })
+
+      return {
+        ...initialSessionState,
+
+        // Session management
+        createSession: async (data: CreateSessionData) => {
+          set({ loading: true })
+          try {
+            const session = await SessionAPI.createSession(data)
+            set((state) => ({
+              sessions: [session, ...state.sessions],
+              loading: false
+            }))
+            return session
+          } catch (error) {
+            set({ loading: false })
+            captureException(error)
+            throw error
+          }
+        },
+
+        loadSessions: async () => {
+          set({ loading: true })
+          try {
+            const sessions = await SessionAPI.loadSessions()
+            set({ sessions, loading: false })
+          } catch (error) {
+            set({ loading: false })
+            captureException(error)
+            throw error
+          }
+        },
+
+        loadSession: async (sessionId: string) => {
+          set({ loading: true })
+          try {
+            const session = await SessionAPI.loadSession(sessionId)
+            set({ currentSession: session, loading: false })
+          } catch (error) {
+            set({ loading: false })
+            captureException(error)
+            throw error
+          }
+        },
+
+        updateSession: async (sessionId: string, updates) => {
+          try {
+            await SessionAPI.updateSession(sessionId, updates)
+            set((state) => ({
+              currentSession: state.currentSession?.id === sessionId 
+                ? { ...state.currentSession, ...updates }
+                : state.currentSession,
+              sessions: state.sessions.map(session =>
+                session.id === sessionId ? { ...session, ...updates } : session
+              )
+            }))
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        deleteSession: async (sessionId: string) => {
+          try {
+            await SessionAPI.deleteSession(sessionId)
+            set((state) => ({
+              sessions: state.sessions.filter(session => session.id !== sessionId),
+              currentSession: state.currentSession?.id === sessionId ? null : state.currentSession
+            }))
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        // Session lifecycle
+        startSession: async (sessionId: string) => {
+          try {
+            await SessionAPI.startSession(sessionId)
+            await get().updateSession(sessionId, { status: 'active' })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        pauseSession: async (sessionId: string) => {
+          try {
+            await SessionAPI.pauseSession(sessionId)
+            await get().updateSession(sessionId, { status: 'paused' })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        endSession: async (sessionId: string) => {
+          try {
+            await SessionAPI.endSession(sessionId)
+            await get().updateSession(sessionId, { status: 'completed' })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        // Real-time connection
+        connectToSession: async (sessionId: string) => {
+          set({ connecting: true })
+          try {
+            await realtimeManager.connect(sessionId)
+            // Load initial data
+            await Promise.all([
+              get().loadChatHistory(sessionId),
+              get().loadDiceHistory(sessionId),
+              get().loadParticipants(sessionId)
+            ])
+          } catch (error) {
+            set({ connecting: false, connected: false })
+            captureException(error)
+            throw error
+          }
+        },
+
+        disconnectFromSession: () => {
+          realtimeManager.disconnect()
+          set({ connected: false, connecting: false })
+        },
+
+        // Chat and communication
+        sendMessage: async (data: SendMessageData) => {
+          try {
+            await SessionAPI.sendMessage(data)
+            // Message will be added via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        loadChatHistory: async (sessionId: string) => {
+          try {
+            const messages = await SessionAPI.loadChatHistory(sessionId)
+            set({ chatMessages: messages })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        // Dice rolling
+        rollDice: async (data: DiceRollData) => {
+          try {
+            const roll = await SessionAPI.rollDice(data)
+            // Roll will be added via realtime subscription
+            return roll
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        loadDiceHistory: async (sessionId: string) => {
+          try {
+            const rolls = await SessionAPI.loadDiceHistory(sessionId)
+            set({ diceRolls: rolls })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        // Initiative tracking
+        addToInitiative: async (entry) => {
+          const sessionId = get().currentSession?.id
+          if (!sessionId) throw new Error('No active session')
+
+          try {
+            await SessionAPI.addToInitiative(sessionId, entry)
+            // Initiative will be updated via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        updateInitiative: async (entryId: string, updates) => {
+          try {
+            await SessionAPI.updateInitiative(entryId, updates)
+            // Initiative will be updated via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        removeFromInitiative: async (entryId: string) => {
+          try {
+            await SessionAPI.removeFromInitiative(entryId)
+            // Initiative will be updated via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        nextTurn: async () => {
+          const { initiativeOrder } = get()
+          if (initiativeOrder.length === 0) return
+
+          const currentIndex = initiativeOrder.findIndex(entry => entry.isActive)
+          const nextIndex = (currentIndex + 1) % initiativeOrder.length
+
+          // Update current active entry
+          if (currentIndex >= 0) {
+            await get().updateInitiative(initiativeOrder[currentIndex].id, { isActive: false })
+          }
+
+          // Set next entry as active
+          await get().updateInitiative(initiativeOrder[nextIndex].id, { isActive: true })
+        },
+
+        resetInitiative: async () => {
+          const { initiativeOrder } = get()
+          
+          // Clear all active states
+          await Promise.all(
+            initiativeOrder.map(entry => 
+              get().updateInitiative(entry.id, { isActive: false })
+            )
+          )
+
+          // Set first entry as active if any exist
+          if (initiativeOrder.length > 0) {
+            await get().updateInitiative(initiativeOrder[0].id, { isActive: true })
+          }
+        },
+
+        // Participants
+        loadParticipants: async (sessionId: string) => {
+          try {
+            const participants = await SessionAPI.loadParticipants(sessionId)
+            set({ participants })
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        addParticipant: async (sessionId: string, userId: string, characterId?: string) => {
+          try {
+            await SessionAPI.addParticipant(sessionId, userId, characterId)
+            // Participants will be updated via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        removeParticipant: async (sessionId: string, userId: string) => {
+          try {
+            await SessionAPI.removeParticipant(sessionId, userId)
+            // Participants will be updated via realtime subscription
+          } catch (error) {
+            captureException(error)
+            throw error
+          }
+        },
+
+        // Campaign assets (placeholder - implement based on requirements)
+        loadAssets: async (campaignId: string) => {
+          // TODO: Implement asset loading
+          set({ assets: [] })
+        },
+
+        uploadAsset: async (data: AssetUploadData) => {
+          // TODO: Implement asset upload
+          throw new Error('Asset upload not implemented')
+        },
+
+        deleteAsset: async (assetId: string) => {
+          // TODO: Implement asset deletion
+        },
+
+        shareAsset: async (assetId: string) => {
+          // TODO: Implement asset sharing
+        },
+
+        downloadAsset: async (assetId: string) => {
+          // TODO: Implement asset download
+        },
+
+        // UI actions
+        setActiveTab: (tab) => {
+          set({ activeTab: tab })
+        },
+
+        toggleSidebar: () => {
+          set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
+        },
+
+        // Cleanup
+        clearSession: () => {
+          realtimeManager.disconnect()
+          set({
+            currentSession: null,
+            participants: [],
+            chatMessages: [],
+            diceRolls: [],
+            initiativeOrder: [],
+            assets: [],
+            connected: false,
+            connecting: false
           })
+        },
+
+        reset: () => {
+          realtimeManager.disconnect()
+          set(initialSessionState)
+        }
       }
-    )
-    .subscribe()
-}
-
-// Transform functions
-function transformSessionFromDB(dbSession: any): GameSession {
-  return {
-    id: dbSession.id,
-    campaignId: dbSession.campaign_id,
-    name: dbSession.name,
-    description: dbSession.description,
-    status: dbSession.status,
-    scheduledAt: dbSession.scheduled_at,
-    startedAt: dbSession.started_at,
-    endedAt: dbSession.ended_at,
-    participants: [],
-    currentScene: dbSession.current_scene || '',
-    notes: dbSession.notes || '',
-    chatMessages: [],
-    diceRolls: [],
-    initiativeOrder: [],
-    createdAt: dbSession.created_at,
-    updatedAt: dbSession.updated_at,
-  }
-}
-
-function transformParticipantFromDB(dbParticipant: any): any {
-  return {
-    id: dbParticipant.id,
-    sessionId: dbParticipant.session_id,
-    userId: dbParticipant.user_id,
-    characterId: dbParticipant.character_id,
-    role: dbParticipant.role,
-    status: dbParticipant.status,
-    joinedAt: dbParticipant.joined_at,
-    user: dbParticipant.user,
-    character: dbParticipant.character,
-  }
-}
-
-function transformChatMessageFromDB(dbMessage: any): ChatMessage {
-  return {
-    id: dbMessage.id,
-    sessionId: dbMessage.session_id,
-    userId: dbMessage.user_id,
-    type: dbMessage.type,
-    content: dbMessage.content,
-    metadata: dbMessage.metadata,
-    timestamp: dbMessage.timestamp,
-    user: dbMessage.user,
-  }
-}
-
-function transformDiceRollFromDB(dbRoll: any): DiceRoll {
-  return {
-    id: dbRoll.id,
-    sessionId: dbRoll.session_id,
-    userId: dbRoll.user_id,
-    expression: dbRoll.expression,
-    result: dbRoll.result,
-    breakdown: dbRoll.breakdown,
-    modifier: dbRoll.modifier,
-    advantage: dbRoll.advantage,
-    purpose: dbRoll.purpose,
-    timestamp: dbRoll.timestamp,
-    user: dbRoll.user,
-  }
-}
-
-function transformInitiativeFromDB(dbInitiative: any): InitiativeEntry {
-  return {
-    id: dbInitiative.id,
-    sessionId: dbInitiative.session_id,
-    characterId: dbInitiative.character_id,
-    name: dbInitiative.name,
-    initiative: dbInitiative.initiative,
-    isActive: dbInitiative.is_active,
-    conditions: dbInitiative.conditions || [],
-    hitPoints: dbInitiative.hit_points,
-  }
-}
+    },
+    { name: 'sessions-store' }
+  )
+)
 
