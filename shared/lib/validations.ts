@@ -106,6 +106,8 @@ export const campaignSchema = z.object({
   tags: z.array(z.string()).max(5).default([]),
 })
 
+export const campaignFormSchema = campaignSchema
+
 // Game session validation schemas
 export const sessionMessageSchema = z.object({
   content: z
@@ -115,6 +117,19 @@ export const sessionMessageSchema = z.object({
   type: z.enum(['player', 'gm', 'system', 'dice']),
   characterName: z.string().optional(),
   metadata: z.record(z.any()).optional(),
+})
+
+export const sessionFormSchema = z.object({
+  name: z
+    .string()
+    .min(1, 'Session name is required')
+    .max(100, 'Session name must be less than 100 characters'),
+  description: z
+    .string()
+    .max(500, 'Description must be less than 500 characters')
+    .optional(),
+  scheduledFor: z.date().optional(),
+  maxDuration: z.number().min(30).max(480).default(240), // 30 minutes to 8 hours
 })
 
 // API validation schemas
@@ -134,6 +149,8 @@ export type SignupForm = z.infer<typeof signupSchema>
 export type CharacterForm = z.infer<typeof characterFormSchema>
 export type Character = z.infer<typeof characterSchema>
 export type Campaign = z.infer<typeof campaignSchema>
+export type CampaignForm = z.infer<typeof campaignFormSchema>
+export type SessionForm = z.infer<typeof sessionFormSchema>
 export type SessionMessage = z.infer<typeof sessionMessageSchema>
 export type Pagination = z.infer<typeof paginationSchema>
 export type Search = z.infer<typeof searchSchema>

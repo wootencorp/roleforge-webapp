@@ -5,6 +5,12 @@ export { DND5E_BACKGROUNDS } from './data/backgrounds'
 export { DND5E_SKILLS, DND5E_ALIGNMENTS, ABILITY_SCORES, DICE_TYPES } from './data/skills'
 export type { DnD5eRace, DnD5eClass, DnD5eBackground } from './data/types'
 
+// Legacy exports for compatibility
+export { DND5E_RACES as RACES } from './data/races'
+export { DND5E_CLASSES as CLASSES } from './data/classes'
+export { DND5E_BACKGROUNDS as BACKGROUNDS } from './data/backgrounds'
+export { DND5E_SKILLS as SKILLS, DND5E_ALIGNMENTS as ALIGNMENTS } from './data/skills'
+
 // Utility functions for D&D 5e calculations
 export function calculateAbilityModifier(score: number): number {
   return Math.floor((score - 10) / 2)

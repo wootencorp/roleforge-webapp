@@ -28,15 +28,14 @@ export const useCampaignsStore = create<CampaignsStore>((set, get) => ({
         .from('campaigns')
         .select(`
           *,
-          creator:user_profiles!campaigns_creator_id_fkey(
-            id,
-            first_name,
-            last_name,
-            avatar_url
-          ),
-          members:campaign_members(count)
-        `)
-
+          creator:user_profiles!  fetchCampaigns: async (filters?: CampaignFilters) => {
+    set({ loading: true })
+    
+    try {
+      let query = supabase
+        .from('campaigns')
+        .select('*')
+      
       // Apply filters
       if (filters?.search) {
         query = query.or(`name.ilike.%${filters.search}%,description.ilike.%${filters.search}%`)
@@ -54,27 +53,28 @@ export const useCampaignsStore = create<CampaignsStore>((set, get) => ({
         query = query.eq('is_public', filters.isPublic)
       }
       
-      if (filters?.hasOpenSlots) {
-        query = query.lt('current_players', supabase.raw('max_players'))
+      // Apply pagination
+      if (filters?.limit) {
+        const from = (filters.page || 0) * filters.limit
+        const to = from + filters.limit - 1
+        query = query.range(from, to)
       }
-
+           
       // Apply sorting
       const sortBy = filters?.sortBy || 'created_at'
       const sortOrder = filters?.sortOrder || 'desc'
       query = query.order(sortBy, { ascending: sortOrder === 'asc' })
 
-      // Apply pagination
-      if (filters?.page && filters?.limit) {
-        const from = (filters.page - 1) * filters.limit
-        const to = from + filters.limit - 1
-        query = query.range(from, to)
-      }
-
       const { data, error } = await query
-
       if (error) throw error
 
-      const campaigns = data.map(transformCampaignFromDB)
+      let campaigns = data?.map(transformCampaign) || []
+      
+      // Apply client-side filtering for open slots
+      if (filters?.hasOpenSlots) {
+        campaigns = campaigns.filter(c => c.currentPlayers < c.maxPlayers)
+      }
+
       set({ campaigns, loading: false })
     } catch (error) {
       set({ loading: false })
@@ -82,7 +82,6 @@ export const useCampaignsStore = create<CampaignsStore>((set, get) => ({
       throw error
     }
   },
-
   fetchMyCampaigns: async () => {
     set({ loading: true })
     

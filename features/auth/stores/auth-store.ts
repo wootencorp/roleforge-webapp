@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { supabase } from '@/shared/lib/supabase'
 import { captureException } from '@/config/sentry.config'
 import type { User } from '@/shared/types'
-import type { AuthState, AuthActions, SignUpData, AuthError } from '../types'
+import type { AuthState, AuthActions, SignUpData } from '../types'
 
 interface AuthStore extends AuthState, AuthActions {}
 

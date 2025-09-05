@@ -54,21 +54,21 @@ export function useMyCampaigns() {
 }
 
 export function useCampaign(campaignId?: string) {
-  const { campaigns, myCampaigns, selectCampaign } = useCampaigns()
+  const { campaigns, selectCampaign } = useCampaigns()
   const store = useCampaignsStore()
 
   useEffect(() => {
     if (campaignId) {
-      const campaign = [...campaigns, ...myCampaigns].find(c => c.id === campaignId)
+      const campaign = campaigns.find(c => c.id === campaignId)
       if (campaign) {
         selectCampaign(campaign)
       }
     }
-  }, [campaignId, campaigns, myCampaigns, selectCampaign])
+  }, [campaignId, campaigns, selectCampaign])
 
   return {
     campaign: campaignId 
-      ? [...campaigns, ...myCampaigns].find(c => c.id === campaignId) || null
+      ? campaigns.find(c => c.id === campaignId) || null
       : store.selectedCampaign,
     selectCampaign,
   }

@@ -227,7 +227,7 @@ export function SignupForm({ onSuccess, redirectTo }: SignupFormProps) {
 
       <div className="text-center text-sm">
         <span className="text-muted-foreground">Already have an account? </span>
-        <Link href="/auth/login" className="text-primary hover:underline">
+        <Link href={"/auth/login" as any} className="text-primary hover:underline">
           Sign in
         </Link>
       </div>

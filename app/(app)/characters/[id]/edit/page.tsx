@@ -15,7 +15,14 @@ export default function EditCharacterPage({ params }: EditCharacterPageProps) {
           Update your character's details and abilities.
         </p>
       </div>
-      <CharacterForm characterId={params.id} />
+      <CharacterForm 
+        onSuccess={() => {
+          // Handle success - redirect or show message
+        }}
+        onCancel={() => {
+          // Handle cancel - go back
+        }}
+      />
     </div>
   )
 }

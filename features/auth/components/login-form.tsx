@@ -106,7 +106,7 @@ export function LoginForm({ onSuccess, redirectTo }: LoginFormProps) {
 
         <div className="flex items-center justify-between">
           <Link
-            href="/auth/forgot-password"
+            href={"/auth/forgot-password" as any}
             className="text-sm text-primary hover:underline"
           >
             Forgot password?
@@ -125,7 +125,7 @@ export function LoginForm({ onSuccess, redirectTo }: LoginFormProps) {
 
       <div className="text-center text-sm">
         <span className="text-muted-foreground">Don't have an account? </span>
-        <Link href="/auth/signup" className="text-primary hover:underline">
+        <Link href={"/auth/signup" as any} className="text-primary hover:underline">
           Sign up
         </Link>
       </div>

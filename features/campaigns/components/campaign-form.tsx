@@ -72,7 +72,6 @@ export function CampaignForm({ onSuccess, onCancel }: CampaignFormProps) {
         maxPlayers: data.maxPlayers,
         isPublic: data.isPublic,
         tags: selectedTags,
-        imageUrl: data.imageUrl,
       })
       
       if (onSuccess) onSuccess(campaign.id)
@@ -124,16 +123,6 @@ export function CampaignForm({ onSuccess, onCancel }: CampaignFormProps) {
             )}
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="imageUrl">Campaign Image URL (Optional)</Label>
-            <Input
-              id="imageUrl"
-              type="url"
-              placeholder="https://example.com/campaign-image.jpg"
-              error={errors.imageUrl?.message}
-              {...register('imageUrl')}
-            />
-          </div>
         </div>
 
         {/* Game Settings */}

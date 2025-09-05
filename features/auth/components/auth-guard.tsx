@@ -29,11 +29,11 @@ export function AuthGuard({
       const redirect = redirectTo || '/auth/login'
       const currentPath = window.location.pathname
       const returnUrl = currentPath !== '/' ? `?returnUrl=${encodeURIComponent(currentPath)}` : ''
-      router.push(`${redirect}${returnUrl}`)
+      router.push(`${redirect}${returnUrl}` as any)
     } else if (!requireAuth && user) {
       // User is authenticated but shouldn't be (e.g., on login page)
       const redirect = redirectTo || '/dashboard'
-      router.push(redirect)
+      router.push(redirect as any)
     }
   }, [user, loading, initialized, requireAuth, redirectTo, router])
 
